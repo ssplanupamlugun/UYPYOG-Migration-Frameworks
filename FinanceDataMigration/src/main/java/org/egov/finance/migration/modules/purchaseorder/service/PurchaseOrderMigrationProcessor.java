@@ -1,5 +1,7 @@
 package org.egov.finance.migration.modules.purchaseorder.service;
 
+import org.egov.finance.migration.service.MigrationRecordClaimService;
+
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -35,6 +37,7 @@ public class PurchaseOrderMigrationProcessor
     private final PurchaseOrderRequestBuilder requestBuilder;
 
     private final DuplicateDetectionService duplicateDetectionService;
+    private final MigrationRecordClaimService migrationRecordClaimService;
 
     private final PurchaseOrderApiClient purchaseOrderApiClient;
 
@@ -51,6 +54,7 @@ public class PurchaseOrderMigrationProcessor
             PurchaseOrderExcelReader excelReader,
             PurchaseOrderRequestBuilder requestBuilder,
             DuplicateDetectionService duplicateDetectionService,
+            MigrationRecordClaimService migrationRecordClaimService,
             PurchaseOrderApiClient purchaseOrderApiClient,
             MigrationJobRepository migrationJobRepository,
             MigrationJobDetailRepository migrationJobDetailRepository,
@@ -61,6 +65,7 @@ public class PurchaseOrderMigrationProcessor
         this.excelReader = excelReader;
         this.requestBuilder = requestBuilder;
         this.duplicateDetectionService = duplicateDetectionService;
+        this.migrationRecordClaimService = migrationRecordClaimService;
         this.purchaseOrderApiClient = purchaseOrderApiClient;
         this.migrationJobRepository = migrationJobRepository;
         this.migrationJobDetailRepository = migrationJobDetailRepository;
@@ -248,6 +253,24 @@ public class PurchaseOrderMigrationProcessor
                 continue;
             }
 
+            boolean claimed = migrationRecordClaimService.claim(
+                    request.getTenantId(),
+                    request.getMigrationType().name(),
+                    recordKeys,
+                    request.getJobId());
+
+            if (!claimed) {
+                result.setStatus(RecordStatus.SKIPPED);
+                result.setMessage("Purchase Order already claimed or migrated.");
+                result.setExecutionTime(0L);
+                skipped++;
+                recordResults.add(result);
+                saveMigrationDetail(job, request, result, RecordStatus.SKIPPED.name(), recordKeys);
+                updateJobProgress(job, i + 1, records.size(), success, failed, skipped,
+                        "Record " + (i + 1) + " of " + records.size() + " skipped (already claimed or migrated)");
+                continue;
+            }
+
             /*
              * ========================================================
              * PROCESS CURRENT PURCHASE ORDER
@@ -324,6 +347,8 @@ public class PurchaseOrderMigrationProcessor
                         "Purchase Order created successfully.");
 
                 success++;
+                migrationRecordClaimService.markSuccess(
+                        request.getTenantId(), request.getMigrationType().name(), recordKeys, request.getJobId());
 
             } catch (Exception e) {
 
@@ -342,6 +367,8 @@ public class PurchaseOrderMigrationProcessor
                         errorMessage);
 
                 failed++;
+                migrationRecordClaimService.release(
+                        request.getTenantId(), request.getMigrationType().name(), recordKeys, request.getJobId());
 
             } finally {
 
