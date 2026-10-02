@@ -4,6 +4,8 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.egov.finance.migration.service.MigrationRecordClaimService;
+
 import org.egov.finance.migration.common.dto.MigrationRequest;
 import org.egov.finance.migration.common.dto.MigrationResult;
 import org.egov.finance.migration.common.dto.RecordResult;
@@ -30,6 +32,7 @@ public class WorkMigrationProcessor extends AbstractMigrationProcessor {
     private final WorkExcelReader excelReader;
     private final WorkRequestBuilder requestBuilder;
     private final DuplicateDetectionService duplicateDetectionService;
+    private final MigrationRecordClaimService migrationRecordClaimService;
     private final WorkApiClient workApiClient;
     private final MigrationJobRepository migrationJobRepository;
     private final MigrationJobDetailRepository migrationJobDetailRepository;
@@ -42,6 +45,7 @@ public class WorkMigrationProcessor extends AbstractMigrationProcessor {
             WorkExcelReader excelReader,
             WorkRequestBuilder requestBuilder,
             DuplicateDetectionService duplicateDetectionService,
+            MigrationRecordClaimService migrationRecordClaimService,
             WorkApiClient workApiClient,
             MigrationJobRepository migrationJobRepository,
             MigrationJobDetailRepository migrationJobDetailRepository,
@@ -52,6 +56,7 @@ public class WorkMigrationProcessor extends AbstractMigrationProcessor {
         this.excelReader = excelReader;
         this.requestBuilder = requestBuilder;
         this.duplicateDetectionService = duplicateDetectionService;
+        this.migrationRecordClaimService = migrationRecordClaimService;
         this.workApiClient = workApiClient;
         this.migrationJobRepository = migrationJobRepository;
         this.migrationJobDetailRepository = migrationJobDetailRepository;
@@ -213,6 +218,24 @@ public class WorkMigrationProcessor extends AbstractMigrationProcessor {
                 continue;
             }
 
+            boolean claimed = migrationRecordClaimService.claim(
+                    request.getTenantId(),
+                    request.getMigrationType().name(),
+                    recordKeys,
+                    request.getJobId());
+
+            if (!claimed) {
+                result.setStatus(RecordStatus.SKIPPED);
+                result.setMessage("Work already already claimed or migrated.");
+                result.setExecutionTime(0L);
+                skipped++;
+                recordResults.add(result);
+                saveMigrationDetail(job, request, result, RecordStatus.SKIPPED.name(), recordKeys);
+                updateJobProgress(job, i + 1, records.size(), success, failed, skipped,
+                        "Record " + (i + 1) + " of " + records.size() + " skipped (already claimed or migrated)");
+                continue;
+            }
+
             /*
              * ========================================================
              * PROCESS CURRENT WORK
@@ -275,6 +298,11 @@ public class WorkMigrationProcessor extends AbstractMigrationProcessor {
                         "Work created successfully.");
 
                 success++;
+                migrationRecordClaimService.markSuccess(
+                        request.getTenantId(),
+                        request.getMigrationType().name(),
+                        recordKeys,
+                        request.getJobId());
 
             } catch (Exception e) {
 
@@ -286,6 +314,11 @@ public class WorkMigrationProcessor extends AbstractMigrationProcessor {
                 result.setMessage(errorMessage);
 
                 failed++;
+                migrationRecordClaimService.release(
+                        request.getTenantId(),
+                        request.getMigrationType().name(),
+                        recordKeys,
+                        request.getJobId());
 
             } finally {
 
