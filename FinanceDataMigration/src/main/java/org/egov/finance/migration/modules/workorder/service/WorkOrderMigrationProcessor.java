@@ -1,5 +1,7 @@
 package org.egov.finance.migration.modules.workorder.service;
 
+import org.egov.finance.migration.service.MigrationRecordClaimService;
+
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -35,6 +37,7 @@ public class WorkOrderMigrationProcessor
     private final WorkOrderRequestBuilder requestBuilder;
 
     private final DuplicateDetectionService duplicateDetectionService;
+    private final MigrationRecordClaimService migrationRecordClaimService;
 
     private final WorkOrderApiClient workOrderApiClient;
 
@@ -50,6 +53,7 @@ public class WorkOrderMigrationProcessor
             WorkOrderExcelReader excelReader,
             WorkOrderRequestBuilder requestBuilder,
             DuplicateDetectionService duplicateDetectionService,
+            MigrationRecordClaimService migrationRecordClaimService,
             WorkOrderApiClient workOrderApiClient,
             MigrationJobRepository migrationJobRepository,
             MigrationJobDetailRepository migrationJobDetailRepository,
@@ -60,6 +64,7 @@ public class WorkOrderMigrationProcessor
         this.excelReader = excelReader;
         this.requestBuilder = requestBuilder;
         this.duplicateDetectionService = duplicateDetectionService;
+        this.migrationRecordClaimService = migrationRecordClaimService;
         this.workOrderApiClient = workOrderApiClient;
         this.migrationJobRepository = migrationJobRepository;
         this.migrationJobDetailRepository = migrationJobDetailRepository;
@@ -243,6 +248,24 @@ public class WorkOrderMigrationProcessor
                 continue;
             }
 
+            boolean claimed = migrationRecordClaimService.claim(
+                    request.getTenantId(),
+                    request.getMigrationType().name(),
+                    recordKeys,
+                    request.getJobId());
+
+            if (!claimed) {
+                result.setStatus(RecordStatus.SKIPPED);
+                result.setMessage("Work Order already claimed or migrated.");
+                result.setExecutionTime(0L);
+                skipped++;
+                recordResults.add(result);
+                saveMigrationDetail(job, request, result, RecordStatus.SKIPPED.name(), recordKeys);
+                updateJobProgress(job, i + 1, records.size(), success, failed, skipped,
+                        "Record " + (i + 1) + " of " + records.size() + " skipped (already claimed or migrated)");
+                continue;
+            }
+
             /*
              * ========================================================
              * PROCESS CURRENT WORK ORDER
@@ -314,6 +337,8 @@ public class WorkOrderMigrationProcessor
                         "Work Order created successfully.");
 
                 success++;
+                migrationRecordClaimService.markSuccess(
+                        request.getTenantId(), request.getMigrationType().name(), recordKeys, request.getJobId());
 
             } catch (Exception e) {
 
@@ -331,6 +356,8 @@ public class WorkOrderMigrationProcessor
                         errorMessage);
 
                 failed++;
+                migrationRecordClaimService.release(
+                        request.getTenantId(), request.getMigrationType().name(), recordKeys, request.getJobId());
 
             } finally {
 
